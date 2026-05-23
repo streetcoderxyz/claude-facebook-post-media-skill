@@ -1,6 +1,7 @@
 ---
 name: facebook-post-from-clone
 description: Publish a clone batch as ONE Facebook post (album with multiple images) to a single Facebook group or your own timeline. Reads all post-N/new-image-logo.jpg files from a facebook-clone-post batch and uploads them as an album under a single album caption. Drives the composer via OpenClaw browser with a logged-in Brave profile. Triggers on "post the album to <group>", "đăng album lên timeline", "publish batch X as one post".
+allowed-tools: Bash(openclaw browser:*), Bash(sleep:*), Bash(ps:*), Bash(kill:*), Bash(cat:*), Bash(ls:*), Bash(cp:*), Bash(mkdir:*), Bash(python3:*), Bash(sips:*)
 ---
 
 # Publish Clone Batch as One Album Post
@@ -121,47 +122,56 @@ If title contains "Log in to Facebook" → STOP.
 
 ### Phase 2 — Open the composer
 
+The composer trigger label depends on the target surface:
+
+| Surface | Trigger label |
+|---|---|
+| Own timeline | `<Name> ơi, bạn đang nghĩ gì thế?` / `What's on your mind, <Name>?` |
+| Page | `Bạn đang nghĩ gì?` / `What's on your mind?` |
+| Group | `Bạn viết gì đi...` / `Write something...` |
+
 ```bash
 OPENCLAW_TIMEOUT=60000 openclaw browser snapshot --interactive --compact 2>&1 \
-  | grep -iE "Write something|Viết gì đó|What's on your mind|Bạn đang nghĩ gì" | head -3
+  | grep -iE "Write something|Viết gì đi|Viết gì đó|What's on your mind|Bạn đang nghĩ gì|nghĩ gì thế" | head -3
 OPENCLAW_TIMEOUT=60000 openclaw browser click <trigger_ref>
 sleep 3
 ```
 
 A modal composer opens with an empty textbox.
 
+> **Privacy note for own-timeline:** FB defaults the audience to "Friends" (`Bạn bè`). If you want public, click the privacy button (`Chỉnh sửa quyền riêng tư...`) and switch BEFORE filling content — switching after often resets the composer.
+
 ### Phase 3 — Attach all images in one shot
 
-Open the inline Photo/Video picker:
+Click the "Ảnh/video" / "Photo/video" toggle inside the composer to mount the file input (`<input type=file multiple>`). **Do NOT click an "Add photos" / "Choose file" button afterwards — that opens the native OS file picker dialog, which OpenClaw can't drive.** Instead, upload directly to the input element via `--element`:
 
 ```bash
 OPENCLAW_TIMEOUT=60000 openclaw browser snapshot --interactive --compact 2>&1 \
   | grep -iE "Photo/video|Ảnh/video" | head -3
 OPENCLAW_TIMEOUT=60000 openclaw browser click <photo_video_ref>
 sleep 2
+
+# Programmatic upload — no popup. Target the multi-file input inside the dialog.
+OPENCLAW_TIMEOUT=120000 openclaw browser upload --element '[role=dialog] input[type=file][multiple]' $STAGED_LIST
+sleep 12  # FB needs time to process thumbnails for an album
 ```
 
-Find the "Add photos" / "Chọn file" trigger and pass ALL staged paths to `upload`. OpenClaw's `upload` accepts variadic paths (`upload [options] <paths...>`) so a single call sets every file at once on the input:
+> **Why `--element` and not `--ref`:** `--ref <button>` arms a file chooser triggered by clicking that button — that opens the native OS picker, which the agent cannot interact with. `--element <selector>` sets `input.files` directly on the hidden input via DOM, then dispatches `change` — no popup, no user interaction needed.
+
+**Verify all thumbnails rendered.** FB's composer accepts only 5 images via the first programmatic upload; the rest are silently dropped. So after sleep, count *unique* attached photos and add the remainder via the Edit-all flow if short:
 
 ```bash
-OPENCLAW_TIMEOUT=60000 openclaw browser snapshot --interactive --compact 2>&1 \
-  | grep -iE "Add photos|Add photo|Thêm ảnh|Choose file|Chọn file" | head -5
-# Pass every staged path on one line:
-OPENCLAW_TIMEOUT=120000 openclaw browser upload --ref <add_photos_ref> $STAGED_LIST
-sleep 10  # FB needs time to process all thumbnails
+OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var dlgs = document.querySelectorAll("[role=dialog]"); var t = Array.from(dlgs).find(function(d){return d.getAttribute("aria-label")==="Tạo bài viết" && d.offsetWidth>0;}); var blobs = t ? Array.from(t.querySelectorAll("img")).filter(function(i){return i.src.startsWith("blob:");}) : []; var u = {}; blobs.forEach(function(i){u[i.src]=true;}); return JSON.stringify({unique_blobs: Object.keys(u).length}); }'
 ```
 
-**Verify all thumbnails rendered.** Count visible image previews in the composer:
+If `unique_blobs < N`:
+1. Click "Chỉnh sửa tất cả" / "Edit all" button in the composer (re-snapshot to find its ref).
+2. In the editor view, click "Thêm ảnh/video" / "Add photo/video" button — **but as `--element`**, not as a UI click. Re-snapshot to get the file input ref/selector for the editor's input.
+3. Upload the missing files via `--element` on that input.
+4. Count again. The editor shows ~2 blob views per photo (main + thumbnail-strip) so the unique count there is `≈ N × 2` — divide by 2 to compare against `N`.
+5. Click "Xong" / "Done" to exit editor mode.
 
-```bash
-OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var dlg = document.querySelector("[role=dialog]"); var imgs = dlg ? Array.from(dlg.querySelectorAll("img")).filter(function(i){ return /blob:|scontent|fbcdn/.test(i.src) && i.width > 60 && i.width < 600; }) : []; return JSON.stringify({thumb_count: imgs.length}); }'
-```
-
-Expected `thumb_count === N` (number of images you uploaded). If it's lower:
-- Some uploads still processing → wait 5s and recount.
-- Persistently lower → some files failed. Identify which by comparing thumbnail captions/order, then use the inline "+" / "Add more photos" button to retry the missing ones individually.
-
-> ⚠️ FB silently caps album size at certain limits (varies by surface — historically ~80 photos but UI degrades past ~10). If `thumb_count` plateaus below the requested N, lower `MAX_IMAGES` and re-run.
+> ⚠️ Closing the editor with "Xong" can trigger a "Lưu bài viết này làm bản nháp?" (save as draft?) confirmation if FB thinks the user is leaving. Click "Đóng" (Close) on THAT dialog — not "Xóa bản nháp" (which deletes everything) and not "Lưu làm bản nháp" (which buries it in drafts). After closing, re-snapshot the editor view and click Xong again — the draft prompt should not re-appear.
 
 ### Phase 4 — Fill the caption
 
@@ -179,6 +189,14 @@ P=$(cat "$CAPTION") && PJSON=$(printf '%s' "$P" | python3 -c 'import sys,json; p
   && OPENCLAW_TIMEOUT=120000 openclaw browser fill --fields "[{\"ref\":\"<textbox_ref>\",\"value\":$PJSON}]"
 sleep 3
 ```
+
+Then **verify the caption stuck** by reading the Lexical contenteditable's text content. Don't rely on the snapshot showing it — the editor sometimes mounts outside the dialog DOM tree:
+
+```bash
+OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var tbs = document.querySelectorAll("[contenteditable=true]"); var best = Array.from(tbs).reduce(function(a,b){return b.innerText.length > a.innerText.length ? b : a;}, tbs[0] || {innerText:""}); return JSON.stringify({len: best.innerText.length, preview: best.innerText.slice(0,80)}); }'
+```
+
+If `len === 0` after fill, either the ref was stale OR your `evaluate` was scoped too narrowly — Lexical's actual editor sometimes mounts outside `[role=dialog]`. Try a global `document.querySelectorAll("[contenteditable=true]")` and read the longest one; if that has the caption, you're done. Otherwise re-snapshot the textbox and re-fill.
 
 ### Phase 5 — Submit + verify
 
@@ -247,7 +265,9 @@ DRY RUN — composer populated with <N> images + caption, NOT posted.
 | `thumb_count` < expected N after upload | Some files failed. Click "+" / "Add more" in the composer, re-arm upload with the missing files (compare `STAGED_LIST` against the rendered thumbs). Retry once. If still short → STOP and report which slots are missing. |
 | Post button stays `[disabled]` for > 60 s | Likely a stalled upload or rate limit. Re-snapshot once. If still disabled → flag INCOMPLETE and don't retry; FB may have shadow-rejected the album. |
 | Modal closes mid-upload | A click cascaded too fast or you bumped focus. Re-open composer, click Photo/video, re-arm upload. Use `sleep 3` between trigger clicks. |
-| Variadic `upload` only attaches 1 file | OpenClaw build doesn't support multi-path upload. Fall back: click "Add more photos" once per image, `--ref` the "+" button each time, `upload` one path at a time. Use a separate snapshot for each iteration since the "+" ref moves. |
+| Only 5 of N images attached after `upload --element` | FB silently drops uploads past 5 on the first programmatic batch. Click "Chỉnh sửa tất cả" / "Edit all" to enter the editor view, find the editor's `input[type=file]` (its own hidden input, distinct from the composer's), then `upload --element` the missing images to it. Then click "Xong" / "Done". |
+| "Lưu bài viết này làm bản nháp?" prompt appears after clicking "Xong" | FB thinks you're closing the composer. Click "Đóng" (Close) in THAT prompt — never "Xóa bản nháp" (deletes work) or "Lưu làm bản nháp" (sends to drafts). After closing, re-snapshot the editor and re-click Xong. |
+| Caption fill reports `filled 1 field(s)` but text doesn't appear | The ref pointed at a sibling/empty textbox. Lexical's actual editor is sometimes outside the dialog DOM — verify via `document.querySelectorAll("[contenteditable=true]")` globally and read the largest one. Re-snapshot the textbox ref and re-fill. |
 | Album order in the post differs from `SLOT_ORDER` | FB sometimes reorders by EXIF timestamp. If order matters, rename staged files with a numeric prefix (`01-<slot>.jpg`, `02-<slot>.jpg`, …) before uploading — FB respects filename sort for tied timestamps. |
 | Rate limit dialog | STOP. Notify user. Wait ≥ 15 minutes before retrying. |
 | Album posted but image quality looks reduced in feed | FB compresses albums more aggressively than single images. Compare the feed image to `image-1-full.png` source — if loss is severe, post as separate single-image posts instead. |
