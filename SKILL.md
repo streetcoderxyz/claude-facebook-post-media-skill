@@ -1,30 +1,41 @@
 ---
-name: facebook-post-from-clone
-description: Publish a clone batch as ONE Facebook post (album with multiple images) to a single Facebook group or your own timeline. Reads all post-N/new-image-logo.jpg files from a facebook-clone-post batch and uploads them as an album under a single album caption. Drives the composer via OpenClaw browser with a logged-in Brave profile. Triggers on "post the album to <group>", "đăng album lên timeline", "publish batch X as one post".
-allowed-tools: Bash(openclaw browser:*), Bash(sleep:*), Bash(ps:*), Bash(kill:*), Bash(cat:*), Bash(ls:*), Bash(cp:*), Bash(mkdir:*), Bash(python3:*), Bash(sips:*)
+name: facebook-post-media
+description: Publish media (one video OR an N-image album) from a clone-batch folder as ONE Facebook post to a single target (your timeline OR a Facebook group). Reads media files from a facebook-clone-post style batch (`post-N/<media>`) and drives the composer via OpenClaw browser with a logged-in Brave profile. Triggers on "post the album to <group>", "publish video to my timeline", "đăng video lên nhóm <name>", "publish batch as one post". For posting to MANY targets, hand off to facebook-post-to-groups instead.
+allowed-tools: Bash(openclaw browser:*), Bash(sleep:*), Bash(ps:*), Bash(kill:*), Bash(cat:*), Bash(ls:*), Bash(cp:*), Bash(mkdir:*), Bash(python3:*), Bash(sips:*), Bash(test:*), Bash(date:*), Bash(basename:*), Bash(dirname:*), Bash(file:*)
 ---
 
-# Publish Clone Batch as One Album Post
+# Publish Media from a Clone-Batch Folder
 
-Takes an entire clone-batch directory (the output of `facebook-clone-post`, e.g. `/Users/binhquach/Workplace/fb-clone/<batch>/`) and creates ONE Facebook post containing all N images as an album, under a single album-level caption. Designed for the medical-infographic batches where ten ailment infographics belong together as a single themed post.
+Takes a single piece of media (one video at `post-N/video/<file>.mp4`, OR a multi-image album at `post-N/<image>.jpg`) from a facebook-clone-post style batch directory and creates ONE Facebook post on a single target (your timeline OR a Facebook group). Designed for two flavors:
+
+- **Album mode** — the original use case: a batch of N infographics (e.g. ten ailment cards) published as one album with one caption.
+- **Video mode** — a single rendered video (e.g. `post-1/video/post-1.mp4` from the `video-prep` `post2video` pipeline) published as one post with one caption.
+
+The composer mechanics are the same; only the file type and timing differ.
 
 ## When to use this skill
 
-- After `/facebook-clone-post` produced N infographics (e.g. 10), you want them under ONE post with one caption, not N separate posts.
-- Single-image albums (N=1) work too — pass a batch with just `post-1/`.
+- After `/facebook-clone-post` produced N infographics and you want one album post with one caption.
+- After `/video-prep post2video` produced one `post-1/video/post-1.mp4` and you want one video post.
+- Single-image case (N=1 with one `post-1/new-image-logo.jpg`) — works too.
 
 Do NOT use for:
-- N separate posts, one per image → loop the user's manual FB upload, or use `facebook-post-to-groups` per image.
+- N separate posts, one per image → use `facebook-post-to-groups` per image.
+- Posting the SAME content to MANY targets → use `facebook-post-to-groups` (it iterates group URLs from a Notion list). This skill is one target per invocation.
 - Sharing an existing FB post → `facebook-share-to-groups`.
 - Scheduling for later via Business Suite → `facebook-schedule-business-suite`.
-- Posting source images instead of cloned images → adjust `--image-name` (default `new-image-logo.jpg`).
+- Posting source images instead of cloned images → set `MEDIA_NAME=source-image.jpg`.
 
 ## Prerequisites
 
 1. `openclaw browser status` → `running: true`. If not: `openclaw browser start && sleep 4`.
 2. Brave profile already logged in to Facebook. Login walls → **stop and notify**, never automate login.
-3. The batch directory must contain `post-1/`, `post-2/`, … each with the chosen image file.
-4. The batch directory must contain `album-caption.md` (the single album caption). If missing → STOP and ask the user to create it (the skill never auto-generates marketing copy).
+3. The batch directory must contain `post-1/`, `post-2/`, … each with the chosen media file.
+4. A caption file at one of:
+   - `<BATCH_DIR>/album-caption.md` — used by default (album-style)
+   - `<BATCH_DIR>/post-<slot>/video-caption.md` — used when MODE=video and the slot is specified
+   - Override via `CAPTION_FILE=<path>` env var
+   If missing → STOP and ask the user to create it (the skill never auto-generates marketing copy).
 5. `OPENCLAW_TIMEOUT=60000` prefix on every `openclaw browser` command (120000 for upload/fill).
 
 ---
@@ -33,13 +44,15 @@ Do NOT use for:
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| **BATCH_DIR** | Yes | — | Path to a facebook-clone-post batch directory (contains `post-1/`, `post-2/`, …) |
+| **BATCH_DIR** | Yes | — | Path to a facebook-clone-post (or video-prep post2video) batch directory containing `post-1/`, `post-2/`, … |
 | **TARGET** | Yes | — | Facebook group URL (`https://www.facebook.com/groups/<id>`) OR `timeline` OR a full profile URL |
-| **CAPTION_FILE** | No | `<BATCH_DIR>/album-caption.md` | Single caption used for the album |
-| **IMAGE_NAME** | No | `new-image-logo.jpg` | Filename to pick from each `post-*/` (falls back to `new-image.jpg`) |
-| **SLOT_ORDER** | No | numeric `1..N` | Override post order: comma-separated slot numbers, e.g. `1,3,5,2,4`. Useful if you want a specific narrative sequence |
-| **MAX_IMAGES** | No | `10` | Skip slots beyond this. Facebook accepts more, but album UX degrades past ~10. |
-| **DRY_RUN** | No | `false` | If `true`, fills composer + attaches all images + verifies post button enabled, but does NOT click Post. Useful for previewing. |
+| **MODE** | No | auto | `album` \| `video` \| `auto`. `auto` picks `video` if `post-<SLOT>/video/*.mp4` exists, else `album`. |
+| **SLOT** | No | `1` (video mode) / all (album mode) | In video mode, which slot's video to post. In album mode, ignored. |
+| **CAPTION_FILE** | No | mode-specific (see above) | Caption used for the post. |
+| **MEDIA_NAME** | No | album mode: `new-image-logo.jpg` (fallback `new-image.jpg`); video mode: first `*.mp4` in `post-<SLOT>/video/` | Filename to pick from each slot. |
+| **SLOT_ORDER** | No | numeric `1..N` (album mode only) | Comma-separated slot order override, e.g. `1,3,5,2,4`. |
+| **MAX_IMAGES** | No | `10` (album mode only) | Cap the album slot count. FB albums degrade past ~10. |
+| **DRY_RUN** | No | `false` | Fill composer + attach media + verify Post button enabled, but DON'T click Post. Recommended for a first run against a new group. |
 
 ---
 
@@ -47,56 +60,67 @@ Do NOT use for:
 
 ### Phase 0 — Setup + validate
 
-1. Verify BATCH_DIR + caption + images:
+1. Verify BATCH_DIR exists. Resolve MODE:
 
    ```bash
    test -d "<BATCH_DIR>" || { echo "ERR: BATCH_DIR not a directory"; exit 1; }
-   CAPTION="${CAPTION_FILE:-<BATCH_DIR>/album-caption.md}"
-   test -f "$CAPTION" || { echo "ERR: $CAPTION missing — please create it"; exit 1; }
-   IMG_NAME="${IMAGE_NAME:-new-image-logo.jpg}"
-   # Discover slots
-   SLOTS=$(ls -d <BATCH_DIR>/post-* 2>/dev/null | sed 's|.*post-||' | sort -n)
-   echo "Slots found: $SLOTS"
+   SLOT="${SLOT:-1}"
+   if [ "$MODE" = "auto" ] || [ -z "$MODE" ]; then
+     if ls "<BATCH_DIR>/post-$SLOT/video/"*.mp4 2>/dev/null | head -1 >/dev/null; then
+       MODE=video
+     else
+       MODE=album
+     fi
+   fi
+   echo "Mode: $MODE"
    ```
 
-2. **Build the image list** in `SLOT_ORDER` (default: numeric ascending), capped at `MAX_IMAGES`:
+2. Resolve caption:
 
    ```bash
-   # For each slot, pick the image (logoed preferred, falls back)
-   for s in $ORDERED_SLOTS; do
-     d=<BATCH_DIR>/post-$s
-     if [ -f "$d/$IMG_NAME" ]; then echo "$d/$IMG_NAME"; \
-     elif [ -f "$d/new-image.jpg" ]; then echo "$d/new-image.jpg"; \
-     else echo "WARN: post-$s has no image, skipping" >&2; fi
-   done | head -$MAX_IMAGES > /tmp/album-images.txt
+   if [ -z "$CAPTION_FILE" ]; then
+     if [ "$MODE" = "video" ]; then
+       CAPTION_FILE=<BATCH_DIR>/post-$SLOT/video-caption.md
+       [ -f "$CAPTION_FILE" ] || CAPTION_FILE=<BATCH_DIR>/album-caption.md
+     else
+       CAPTION_FILE=<BATCH_DIR>/album-caption.md
+     fi
+   fi
+   test -f "$CAPTION_FILE" || { echo "ERR: $CAPTION_FILE missing — please create it"; exit 1; }
    ```
 
-   STOP if the list is empty or only 1 image where the user expected an album — surface a count to the user before proceeding.
+3. **Build the media list:**
 
-3. **Classify TARGET** (group / timeline / profile) — same as the single-post case.
+   - **Album mode** — iterate slots in `SLOT_ORDER` (default numeric), pick `MEDIA_NAME` per slot (fallback `new-image.jpg`), cap at `MAX_IMAGES`.
+   - **Video mode** — single file `<BATCH_DIR>/post-$SLOT/video/${MEDIA_NAME:-$(ls <BATCH_DIR>/post-$SLOT/video/*.mp4 | head -1)}`.
 
-4. Verify browser:
+   STOP if the list is empty.
+
+4. **Classify TARGET** (group / timeline / profile).
+
+5. Verify browser:
 
    ```bash
    OPENCLAW_TIMEOUT=60000 openclaw browser status
    ```
 
-5. **Stage all images** to OpenClaw's uploads dir with unique per-batch filenames:
+6. **Stage media files** with unique per-batch filenames:
 
    ```bash
    BATCH_ID=$(basename "<BATCH_DIR>")
    STAGED_DIR=/tmp/openclaw/uploads
    mkdir -p "$STAGED_DIR"
    STAGED_LIST=""
-   while read src; do
-     dest="$STAGED_DIR/album-${BATCH_ID}-$(basename $(dirname $src))-$(date +%s%N | tail -c 8).jpg"
+   for src in $MEDIA_LIST; do
+     EXT="${src##*.}"
+     dest="$STAGED_DIR/post-${BATCH_ID}-$(basename $(dirname $src))-$(date +%s%N | tail -c 8).$EXT"
      cp "$src" "$dest"
      STAGED_LIST="$STAGED_LIST $dest"
-   done < /tmp/album-images.txt
+   done
    echo "Staged: $STAGED_LIST"
    ```
 
-   Per-image unique filenames matter — FB's composer occasionally dedups identical filenames within a session.
+   Per-file unique filenames matter — FB's composer occasionally dedups identical filenames within a session.
 
 ### Phase 1 — Navigate to target
 
@@ -126,7 +150,7 @@ The composer trigger label depends on the target surface:
 
 | Surface | Trigger label |
 |---|---|
-| Own timeline | `<Name> ơi, bạn đang nghĩ gì thế?` / `What's on your mind, <Name>?` |
+| Own timeline | `<Name> ơi, bạn đang nghĩ gì thế?` / `What's on your mind, <Name>?` / `Bạn đang nghĩ gì?` |
 | Page | `Bạn đang nghĩ gì?` / `What's on your mind?` |
 | Group | `Bạn viết gì đi...` / `Write something...` |
 
@@ -141,9 +165,9 @@ A modal composer opens with an empty textbox.
 
 > **Privacy note for own-timeline:** FB defaults the audience to "Friends" (`Bạn bè`). If you want public, click the privacy button (`Chỉnh sửa quyền riêng tư...`) and switch BEFORE filling content — switching after often resets the composer.
 
-### Phase 3 — Attach all images in one shot
+### Phase 3 — Attach media
 
-Click the "Ảnh/video" / "Photo/video" toggle inside the composer to mount the file input (`<input type=file multiple>`). **Do NOT click an "Add photos" / "Choose file" button afterwards — that opens the native OS file picker dialog, which OpenClaw can't drive.** Instead, upload directly to the input element via `--element`:
+Click the "Ảnh/video" / "Photo/video" toggle inside the composer to mount the file input (`<input type=file multiple>` accepts both images AND video). **Do NOT click an "Add photos" / "Choose file" button afterwards — that opens the native OS file picker dialog, which OpenClaw can't drive.** Instead, upload directly to the input element via `--element`:
 
 ```bash
 OPENCLAW_TIMEOUT=60000 openclaw browser snapshot --interactive --compact 2>&1 \
@@ -151,24 +175,37 @@ OPENCLAW_TIMEOUT=60000 openclaw browser snapshot --interactive --compact 2>&1 \
 OPENCLAW_TIMEOUT=60000 openclaw browser click <photo_video_ref>
 sleep 2
 
-# Programmatic upload — no popup. Target the multi-file input inside the dialog.
-OPENCLAW_TIMEOUT=120000 openclaw browser upload --element '[role=dialog] input[type=file][multiple]' $STAGED_LIST
-sleep 12  # FB needs time to process thumbnails for an album
+# Programmatic upload — no popup. Target the file input inside the dialog.
+OPENCLAW_TIMEOUT=120000 openclaw browser upload --element '[role=dialog] input[type=file]' $STAGED_LIST
+```
+
+Wait for processing — video needs longer:
+
+```bash
+# Album: sleep ~3s per image (FB processes thumbnails)
+# Video: sleep 10-15s for the first frame to render in the composer
+sleep $([ "$MODE" = "video" ] && echo 12 || echo $((3 * N_IMAGES)))
 ```
 
 > **Why `--element` and not `--ref`:** `--ref <button>` arms a file chooser triggered by clicking that button — that opens the native OS picker, which the agent cannot interact with. `--element <selector>` sets `input.files` directly on the hidden input via DOM, then dispatches `change` — no popup, no user interaction needed.
 
-**Verify all thumbnails rendered.** FB's composer accepts only 5 images via the first programmatic upload; the rest are silently dropped. So after sleep, count *unique* attached photos and add the remainder via the Edit-all flow if short:
+> **Note on groups vs timeline:** in some group composers, the upload temporarily opens an unlabeled secondary dialog (showing the file input dialog itself) alongside the `Tạo bài viết` composer. Don't panic — the file still binds correctly. Verify via a broader scan (see verification below).
+
+**Verify the media attached.** Different checks for the two modes:
 
 ```bash
-OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var dlgs = document.querySelectorAll("[role=dialog]"); var t = Array.from(dlgs).find(function(d){return d.getAttribute("aria-label")==="Tạo bài viết" && d.offsetWidth>0;}); var blobs = t ? Array.from(t.querySelectorAll("img")).filter(function(i){return i.src.startsWith("blob:");}) : []; var u = {}; blobs.forEach(function(i){u[i.src]=true;}); return JSON.stringify({unique_blobs: Object.keys(u).length}); }'
+# Album mode — count unique blob: imgs across all visible dialogs
+OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var dlgs = Array.from(document.querySelectorAll("[role=dialog]")).filter(d => d.offsetWidth > 0); var imgs = []; dlgs.forEach(d => Array.from(d.querySelectorAll("img")).forEach(i => { if (i.src.startsWith("blob:")) imgs.push(i.src); })); var u = {}; imgs.forEach(s => u[s] = true); return JSON.stringify({unique_blobs: Object.keys(u).length}); }'
+
+# Video mode — count <video> elements across all visible dialogs
+OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var dlgs = Array.from(document.querySelectorAll("[role=dialog]")).filter(d => d.offsetWidth > 0); var n = 0; dlgs.forEach(d => { n += d.querySelectorAll("video").length; }); return JSON.stringify({videos: n}); }'
 ```
 
-If `unique_blobs < N`:
+**Album mode 5-image cap:** if `unique_blobs < N`, FB silently dropped uploads past the first 5. Recover via the editor:
 1. Click "Chỉnh sửa tất cả" / "Edit all" button in the composer (re-snapshot to find its ref).
-2. In the editor view, click "Thêm ảnh/video" / "Add photo/video" button — **but as `--element`**, not as a UI click. Re-snapshot to get the file input ref/selector for the editor's input.
+2. In the editor view, find the editor's own `input[type=file]` (a separate hidden input).
 3. Upload the missing files via `--element` on that input.
-4. Count again. The editor shows ~2 blob views per photo (main + thumbnail-strip) so the unique count there is `≈ N × 2` — divide by 2 to compare against `N`.
+4. Re-count (editor shows ~2 blob views per photo: main + strip — so unique blobs there is `≈ N × 2`; divide by 2).
 5. Click "Xong" / "Done" to exit editor mode.
 
 > ⚠️ Closing the editor with "Xong" can trigger a "Lưu bài viết này làm bản nháp?" (save as draft?) confirmation if FB thinks the user is leaving. Click "Đóng" (Close) on THAT dialog — not "Xóa bản nháp" (which deletes everything) and not "Lưu làm bản nháp" (which buries it in drafts). After closing, re-snapshot the editor view and click Xong again — the draft prompt should not re-appear.
@@ -185,7 +222,7 @@ OPENCLAW_TIMEOUT=60000 openclaw browser snapshot --interactive --compact 2>&1 \
 Fill via `fill --fields` (never `type`):
 
 ```bash
-P=$(cat "$CAPTION") && PJSON=$(printf '%s' "$P" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))') \
+P=$(cat "$CAPTION_FILE") && PJSON=$(printf '%s' "$P" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))') \
   && OPENCLAW_TIMEOUT=120000 openclaw browser fill --fields "[{\"ref\":\"<textbox_ref>\",\"value\":$PJSON}]"
 sleep 3
 ```
@@ -204,36 +241,45 @@ Re-snapshot the Post button:
 
 ```bash
 OPENCLAW_TIMEOUT=60000 openclaw browser snapshot --interactive --compact 2>&1 \
-  | grep -iE "button \"Post\"|button \"Đăng\"" | head -3
+  | grep -iE 'button "Post"|button "Đăng"' | head -3
 ```
 
-If `[disabled]`, the album upload isn't finished. **Wait longer than single-image** — 10 images can take 30 s+ to process FB-side. Loop with 5s sleeps, up to 6 retries. If still disabled → flag INCOMPLETE.
+If `[disabled]`, the media upload isn't finished. **Wait longer for video and large albums:**
+- Single image: 5-10 s
+- Album (10 images): 30-60 s
+- Video: 20-90 s (FB processes the video into multiple resolutions before allowing Post)
 
-If `DRY_RUN=true`: stop here. Report `READY_BUT_NOT_POSTED` with `thumb_count` and caption preview.
+Loop with 5 s sleeps, up to 12 retries (60 s for albums, 60-90 s for video). If still disabled → flag INCOMPLETE.
+
+If `DRY_RUN=true`: stop here. Report `READY_BUT_NOT_POSTED` with media count, caption preview, and the Post button ref.
 
 Otherwise click and verify:
 
 ```bash
 OPENCLAW_TIMEOUT=60000 openclaw browser click <post_ref>
-sleep 10  # album posts take longer to commit than single-image
-OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var modal = document.querySelector("[role=dialog][aria-label*=\"Create\" i], [role=dialog][aria-label*=\"Tạo\" i]"); return JSON.stringify({modal_still_open: !!modal, url: location.href}); }'
+sleep 10  # album/video posts take longer to commit than single-image
+OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var dlgs = Array.from(document.querySelectorAll("[role=dialog]")).filter(d => d.offsetWidth > 0); var labels = dlgs.map(d => d.getAttribute("aria-label")); var composer_open = labels.some(l => l && /Tạo bài viết|Create post/i.test(l)); return JSON.stringify({composer_open, modal_labels: labels, url: location.href}); }'
 ```
 
-If `modal_still_open: true` after 10 s, wait another 10 s. If still open, FB is processing or showing a confirmation — STOP and notify user; do NOT click anywhere automatically.
+If `composer_open: true` after 10 s, wait another 10 s. If still open, FB is processing or showing a confirmation — STOP and notify user; do NOT click anywhere automatically.
+
+> **Video post-publish quirk:** after a successful video post, FB sometimes redirects to a media viewer URL like `/photo/?fbid=<id>` (yes, even for video). This is normal — the post is published. Modal labels like `Trình xem ảnh` / `Photo viewer` confirm this state.
 
 ### Phase 6 — Summary
 
 ```
-Posted album!
+Posted!
+  MODE: <album|video>
   BATCH: <BATCH_ID>
   TARGET: <TARGET>
-  IMAGES: <N> attached (in order: post-1, post-2, …, post-N)
-  CAPTION: <first 80 chars of caption>…
+  MEDIA: <N> image(s)  OR  1 video (<filename>)
+  CAPTION: <first 80 chars>…
+  RESULT_URL: <location.href after publish>
 ```
 
 For DRY_RUN:
 ```
-DRY RUN — composer populated with <N> images + caption, NOT posted.
+DRY RUN — composer populated, NOT posted.
   Click Post manually in the browser, or re-run without DRY_RUN.
 ```
 
@@ -244,15 +290,15 @@ DRY RUN — composer populated with <N> images + caption, NOT posted.
 1. **`OPENCLAW_TIMEOUT=60000`** prefix on every browser command (120000 for upload/fill of large content).
 2. **Use `fill --fields`, never `type`, for Vietnamese captions.** Diacritics mangle otherwise.
 3. **Re-snapshot after every mutation** (click, upload, fill). Refs change.
-4. **Stage every image with a unique filename** under `/tmp/openclaw/uploads/`. FB sometimes dedups identical filenames within a session, dropping silently.
-5. **One album per skill invocation.** Don't loop this to target multiple groups — use `facebook-post-to-groups` for that.
+4. **Stage every file with a unique filename** under `/tmp/openclaw/uploads/`. FB sometimes dedups identical filenames within a session, dropping silently.
+5. **One target per skill invocation.** Don't loop this to target multiple groups — use `facebook-post-to-groups` for that.
 6. **Never automate login.** Login wall → STOP, notify user.
 7. **Honor DRY_RUN.** First-time use against a new group → always DRY_RUN first.
-8. **Default to `new-image-logo.jpg`.** The logoed image is the intended publish artifact; un-logoed is a fallback.
-9. **Don't auto-generate the album caption.** The user authors `album-caption.md`. If missing, STOP — never invent marketing copy.
-10. **Verify thumb_count matches expected N before clicking Post.** A partially-uploaded album posts the wrong subset and there's no undo without deleting + reposting.
-11. **Wait longer for album upload + commit than single image.** ~3 s/image for upload processing, ~10 s for final commit after clicking Post.
-12. **Verify modal closed after submit.** A still-open dialog post-click is the surest sign FB didn't accept the post.
+8. **Default to `new-image-logo.jpg` (album) or the first `*.mp4` in `post-<SLOT>/video/` (video).** Override via `MEDIA_NAME`.
+9. **Don't auto-generate captions.** The user authors the caption file. If missing, STOP — never invent marketing copy.
+10. **Verify media count matches expected before clicking Post.** A partially-uploaded album posts the wrong subset and there's no undo without deleting + reposting.
+11. **Wait longer for video and large albums.** Video upload + processing can take 60-90 s before Post becomes enabled.
+12. **Verify composer modal closed after submit.** A still-open dialog post-click is the surest sign FB didn't accept the post. The `/photo/?fbid=...` redirect for video is normal.
 
 ---
 
@@ -261,16 +307,20 @@ DRY RUN — composer populated with <N> images + caption, NOT posted.
 | Symptom | Action |
 |---|---|
 | FB redirects to /login | STOP. User must log in manually in Brave. |
-| `album-caption.md` missing | STOP. Tell the user to create it at `<BATCH_DIR>/album-caption.md`. Don't auto-generate. |
-| `thumb_count` < expected N after upload | Some files failed. Click "+" / "Add more" in the composer, re-arm upload with the missing files (compare `STAGED_LIST` against the rendered thumbs). Retry once. If still short → STOP and report which slots are missing. |
-| Post button stays `[disabled]` for > 60 s | Likely a stalled upload or rate limit. Re-snapshot once. If still disabled → flag INCOMPLETE and don't retry; FB may have shadow-rejected the album. |
+| Caption file missing | STOP. Tell the user to create `album-caption.md` (or `post-<SLOT>/video-caption.md`). Don't auto-generate. |
+| `unique_blobs < N` (album mode) after upload | Some files failed. Use the "Edit all" recovery flow above. Retry once. If still short → STOP and report which slots are missing. |
+| `videos === 0` after upload (video mode) | Either the file is corrupt or FB rejected the format. Verify with `file <staged>.mp4`; FB accepts H.264 MP4. If valid, the upload may still be in flight — wait 15 more seconds and recheck. If still 0 → STOP. |
+| Post button stays `[disabled]` for > 90 s (video) or > 60 s (album) | Likely a stalled upload or rate limit. Re-snapshot once. If still disabled → flag INCOMPLETE and don't retry; FB may have shadow-rejected the post. |
 | Modal closes mid-upload | A click cascaded too fast or you bumped focus. Re-open composer, click Photo/video, re-arm upload. Use `sleep 3` between trigger clicks. |
-| Only 5 of N images attached after `upload --element` | FB silently drops uploads past 5 on the first programmatic batch. Click "Chỉnh sửa tất cả" / "Edit all" to enter the editor view, find the editor's `input[type=file]` (its own hidden input, distinct from the composer's), then `upload --element` the missing images to it. Then click "Xong" / "Done". |
-| "Lưu bài viết này làm bản nháp?" prompt appears after clicking "Xong" | FB thinks you're closing the composer. Click "Đóng" (Close) in THAT prompt — never "Xóa bản nháp" (deletes work) or "Lưu làm bản nháp" (sends to drafts). After closing, re-snapshot the editor and re-click Xong. |
+| Only 5 of N images attached after `upload --element` (album mode) | FB silently drops uploads past 5 on the first programmatic batch. Use the "Chỉnh sửa tất cả" / "Edit all" recovery flow. |
+| "Lưu bài viết này làm bản nháp?" prompt appears after clicking "Xong" | Click "Đóng" (Close) — NEVER "Xóa bản nháp" (deletes work) or "Lưu làm bản nháp" (sends to drafts). |
 | Caption fill reports `filled 1 field(s)` but text doesn't appear | The ref pointed at a sibling/empty textbox. Lexical's actual editor is sometimes outside the dialog DOM — verify via `document.querySelectorAll("[contenteditable=true]")` globally and read the largest one. Re-snapshot the textbox ref and re-fill. |
-| Album order in the post differs from `SLOT_ORDER` | FB sometimes reorders by EXIF timestamp. If order matters, rename staged files with a numeric prefix (`01-<slot>.jpg`, `02-<slot>.jpg`, …) before uploading — FB respects filename sort for tied timestamps. |
+| Group composer opens TWO dialogs (one unlabeled with the file input, one labeled `Tạo bài viết`) | This is normal in some groups. The file is bound to the unlabeled dialog's input but appears in the `Tạo bài viết` composer after a few seconds. Verify via a broader scan across `document.querySelectorAll("[role=dialog]")`. |
+| Album order in the post differs from `SLOT_ORDER` | FB sometimes reorders by EXIF timestamp. Rename staged files with a numeric prefix (`01-<slot>.jpg`, `02-<slot>.jpg`, …) before uploading — FB respects filename sort for tied timestamps. |
+| Browser redirects to `/photo/?fbid=...` after video publish | Normal for video posts. The post IS published. Modal closed. Done. |
 | Rate limit dialog | STOP. Notify user. Wait ≥ 15 minutes before retrying. |
-| Album posted but image quality looks reduced in feed | FB compresses albums more aggressively than single images. Compare the feed image to `image-1-full.png` source — if loss is severe, post as separate single-image posts instead. |
+| Album image quality degraded in feed | FB compresses albums more aggressively than single images. Compare to `image-1-full.png` source — if loss is severe, post as separate single-image posts instead. |
+| Video held for group moderation | Some pharmacy/medical groups require admin approval. The post will show as "Pending" in your group activity. Nothing to retry — wait. |
 
 ---
 
@@ -281,15 +331,17 @@ DRY RUN — composer populated with <N> images + caption, NOT posted.
 - **Don't `type` Vietnamese text.** Always `fill --fields`.
 - **Don't paste the caption via clipboard.** Diacritic risk.
 - **Don't run `openclaw browser stop` mid-flow.** It logs out FB.
-- **Don't modify `album-caption.md` from inside this skill.** If a tweak is needed, edit it externally and re-run.
+- **Don't modify the caption file from inside this skill.** If a tweak is needed, edit it externally and re-run.
 - **Don't loop this skill to target multiple groups.** For batch-to-groups, hand off to `facebook-post-to-groups` (it can iterate group URLs from a Notion list).
 - **Don't reorder slots silently.** If `SLOT_ORDER` overrides the default numeric order, surface that in the summary.
+- **Don't auto-compose a video caption from the album caption.** The album caption describes a multi-topic album; a single video covers ONE topic and needs its own caption. Ask the user.
 
 ---
 
 ## Future hooks (not implemented yet)
 
-- `--auto-caption` mode that synthesizes the album caption by feeding `_topics.json` through ChatGPT (currently the user authors `album-caption.md`).
-- Multi-target mode: after a successful album post, navigate to additional group URLs and clone-paste the same composer state.
-- Permalink capture: after publish, grab the new post's URL and write it back to `<BATCH_DIR>/album-published.json` for tracking.
+- `--auto-caption` mode that synthesizes the caption by feeding `_topics.json` (album) or the design.json (video) through ChatGPT.
+- Multi-target mode: after a successful post, navigate to additional group URLs and clone-paste the same composer state. (For now: use `facebook-post-to-groups`.)
+- Permalink capture: after publish, grab the new post's URL and write it back to `<BATCH_DIR>/published.json` for tracking.
 - Hashtag injection: read `<BATCH_DIR>/hashtags.txt` and append to the caption automatically.
+- Reel mode: detect short-form vertical video (9:16, < 60 s) and route through FB's Reel composer instead of the standard post composer.
