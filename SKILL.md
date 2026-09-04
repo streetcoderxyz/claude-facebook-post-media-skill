@@ -212,6 +212,13 @@ OPENCLAW_TIMEOUT=60000 openclaw browser evaluate --fn '() => { var dlgs = Array.
 
 ### Phase 4 — Fill the caption
 
+**No-dash rule (mandatory).** The user does not want ANY dash character in the caption. This is **authoring-level, not just stripping** — never write a caption (here, or any `video-caption.md` / `post.md` you author upstream) that contains a dash in the first place. Remove **all** of these: hyphen-minus `-`, double hyphen `--`, en-dash `–`, em-dash `—`, minus sign `−`, horizontal bar `―`. Replace each with whatever reads naturally:
+- A dash used as a separator/clause break (`A — B`, `A - B`, `A -- B`) → `A, B` (comma + space).
+- A hyphen joining a compound token (`OTC-dosing`, `anti-histamin`) → a single space or joined, whichever reads correctly in Vietnamese.
+- Leading list dashes (`- item`) → drop the dash, keep the item.
+
+Collapse any double spaces created by removal. Middle dot `·` and other non-dash separators are fine — leave them. **Verify zero dash characters remain** before filling (the fill snippet below strips them as a mechanical backstop, but the caption should already be dash-free).
+
 Re-snapshot to find the contenteditable textbox ref (it's the modal's main composer field, not any per-image alt-text field):
 
 ```bash
@@ -222,8 +229,18 @@ OPENCLAW_TIMEOUT=60000 openclaw browser snapshot --interactive --compact 2>&1 \
 Fill via `fill --fields` (never `type`):
 
 ```bash
-P=$(cat "$CAPTION_FILE") && PJSON=$(printf '%s' "$P" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))') \
-  && OPENCLAW_TIMEOUT=120000 openclaw browser fill --fields "[{\"ref\":\"<textbox_ref>\",\"value\":$PJSON}]"
+# Reads caption, strips ALL dash chars (backstop for the no-dash rule), JSON-encodes.
+PJSON=$(cat "$CAPTION_FILE" | python3 -c '
+import sys, re, json
+t = sys.stdin.read()
+t = re.sub(r"\s*[-‐‑‒–—―−]+\s*", lambda m: ", " if m.group(0).strip() else " ", t)  # dash (with spaces) -> ", "
+t = re.sub(r"(?m)^,\s*", "", t)          # a line that started with a list dash: drop the leading comma
+t = re.sub(r"[ \t]{2,}", " ", t)          # collapse doubled spaces
+t = re.sub(r"\s+,", ",", t)               # no space before comma
+t = re.sub(r",\s*,", ",", t)              # no doubled commas
+print(json.dumps(t))
+')
+OPENCLAW_TIMEOUT=120000 openclaw browser fill --fields "[{\"ref\":\"<textbox_ref>\",\"value\":$PJSON}]"
 sleep 3
 ```
 
